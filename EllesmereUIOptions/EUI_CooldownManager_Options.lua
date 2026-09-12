@@ -1794,6 +1794,20 @@ initFrame:SetScript("OnEvent", function(self)
                             end
                         end
                     end
+
+                    -- Row: Hide On Cooldown (last row of the section; right slot left
+                    -- empty so the toggle only occupies the left column).
+                    _, h = W:DualRow(parent, y,
+                        { type = "toggle", text = "Hide On Cooldown",
+                          tooltip = "Hide the glow while the spell is on cooldown. Being ready off the global cooldown alone does not count.",
+                          getValue = function() return entry.hideOnCooldown == true end,
+                          setValue = function(v)
+                              entry.hideOnCooldown = v or nil
+                              Refresh()
+                          end,
+                        },
+                        { type = "label", text = "" }
+                    );  y = y - h
                 end
             end
         end
