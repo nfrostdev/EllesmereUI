@@ -1752,8 +1752,7 @@ initFrame:SetScript("OnEvent", function(self)
                         end
                     end
 
-                    -- Row: Hide On Cooldown (last row of the section; right slot left
-                    -- empty so the toggle only occupies the left column).
+                    -- Row: Hide On Cooldown | Glow Delay (last row of the section).
                     _, h = W:DualRow(parent, y,
                         { type = "toggle", text = "Hide On Cooldown",
                           tooltip = "Hide the glow while the spell is on cooldown. Being ready off the global cooldown alone does not count.",
@@ -1763,7 +1762,18 @@ initFrame:SetScript("OnEvent", function(self)
                               Refresh()
                           end,
                         },
-                        { type = "label", text = "" }
+                        { type = "slider", text = "Glow Delay",
+                          min = 0, max = 30, step = 0.5,
+                          tooltip = "In Buff Active mode, wait this many seconds after the buff appears before glowing. 0 glows immediately.",
+                          disabled = function() return entry.mode == "MISSING" end,
+                          disabledTooltip = "Not available in Buff Missing mode",
+                          getValue = function() return tonumber(entry.glowDelay) or 0 end,
+                          setValue = function(v)
+                              v = math.max(0, math.min(30, tonumber(v) or 0))
+                              entry.glowDelay = v ~= 0 and v or nil
+                              Refresh()
+                          end,
+                        }
                     );  y = y - h
                 end
             end
