@@ -164,8 +164,8 @@ local overlayFrames = {}
 local lastStates = {}     -- [key] = bool (last glow state for change detection)
 local _cachedBG = nil     -- cached barGlows reference (refreshed on SetupOverlays)
 
--- Glow Delay state (see the section comment above UpdateOverlayVisuals's gate
--- for the contract). glowDelayOnset is keyed by SPELLID, not overlay key,
+-- Glow Delay state (see GLOW DELAY parts 1/2 in UpdateOverlayVisuals for the
+-- gate). glowDelayOnset is keyed by SPELLID, not overlay key,
 -- because several entries can share one trigger buff and must share one
 -- onset; it survives SetupOverlays on purpose (pruned there, never wiped) so
 -- an options edit mid-buff cannot restart a count. glowDelayPending is keyed
@@ -1505,12 +1505,15 @@ local function SetupOverlays()
     ns._bgWantTargetAuras = wantTarget
     if ns.SetBarGlowTargetAuras then ns.SetBarGlowTargetAuras(wantTarget) end
 
-    -- Glow Delay onset survives a rebuild on purpose (an options edit mid-buff
-    -- must not restart a count), so it is pruned explicitly rather than
-    -- wiped: a spellID no longer named by any delayed ACTIVE entry (entry
+    -- Pruned here rather than wiped (see glowDelayOnset's declaration comment
+    -- above): a spellID no longer named by any delayed ACTIVE entry (entry
     -- removed, mode flipped to MISSING, delay cleared, spell changed) is
     -- stale and would otherwise let a later, unrelated reapply of the same
-    -- spellID inherit a stranger's onset.
+    -- spellID inherit a stranger's onset. The same holds for an entry whose
+    -- button failed to resolve this pass (never added to delayedSids): it
+    -- counts as unobserved, so its spellID is dropped too. Keeping it could
+    -- let a stale onset from an earlier buff be inherited later and light the
+    -- glow early; dropping it can only make the glow late.
     for sid in pairs(glowDelayOnset) do
         if not (delayedSids and delayedSids[sid]) then
             glowDelayOnset[sid] = nil
@@ -1595,12 +1598,10 @@ local function UpdateOverlayVisuals()
             -- GLOW DELAY, part 1: onset tracking. Recorded/cleared here, every
             -- pass, regardless of Only In Combat below -- the count starts at
             -- buff onset even on a pass where combat is holding the glow
-            -- back, per the plan's behavior contract. MISSING mode ignores
-            -- glowDelay entirely (contract #6). Entries without a delay never
-            -- touch glowDelayOnset (zero cost when unused). Keyed by spellID,
-            -- not overlay, so entries sharing one trigger buff share one
-            -- onset; the table survives SetupOverlays (pruned there instead
-            -- of wiped) so an options edit mid-buff does not restart it.
+            -- back, by design. MISSING mode ignores glowDelay entirely: that
+            -- mode glows on the buff's absence, which a delay has nothing to
+            -- measure from. Entries without a delay never touch
+            -- glowDelayOnset (zero cost when unused).
             local glowDelay = mode ~= "MISSING" and tonumber(entry.glowDelay) or nil
             if glowDelay and glowDelay > 0 and spellID and spellID > 0 then
                 if auraActive then
@@ -1633,19 +1634,20 @@ local function UpdateOverlayVisuals()
             -- any order since it runs before both remaining gates. Placed
             -- before At Stacks so that gate's machinery (ConfigureStackGate)
             -- is never configured for a glow the delay is still holding back.
-            -- onset is guaranteed set here: shouldGlow true in ACTIVE mode
-            -- means auraActive was true this same pass, which just
-            -- stamped/kept glowDelayOnset[spellID] above; GetTime() is a
-            -- defensive fallback only, never expected to fire.
-            -- Three accepted gaps (see plan.md), not fixed here: a buff
-            -- already up at login/reload counts from the first pass after
-            -- load; a refresh while the buff is still up does not restart
-            -- the count (invisible without reading the secret expiration
-            -- time); raising the delay mid-count applies the new value to
-            -- the running onset.
+            -- onset can be nil here (the entry's button failed to resolve
+            -- this pass, or SetupOverlays pruned it as stale) -- treated as
+            -- fail-safe: no recorded onset means the delay has not started,
+            -- so the glow stays held back rather than lighting immediately.
+            -- Three accepted gaps, not fixed here: a buff already up at
+            -- login/reload counts from the first pass after load; a refresh
+            -- while the buff is still up, or a drop and reapply within one
+            -- tick (~0.1s), does not restart the count (neither is ever
+            -- observed as inactive, and telling a genuine drop from a refresh
+            -- would need the secret expiration time); raising the delay
+            -- mid-count applies the new value to the running onset.
             if shouldGlow and glowDelay and glowDelay > 0 and spellID and spellID > 0 then
-                local onset = glowDelayOnset[spellID] or GetTime()
-                if GetTime() - onset < glowDelay then
+                local onset = glowDelayOnset[spellID]
+                if onset and GetTime() - onset < glowDelay then
                     shouldGlow = false
                     local target = onset + glowDelay
                     if glowDelayPending[key] ~= target then
