@@ -1634,10 +1634,10 @@ local function UpdateOverlayVisuals()
             -- any order since it runs before both remaining gates. Placed
             -- before At Stacks so that gate's machinery (ConfigureStackGate)
             -- is never configured for a glow the delay is still holding back.
-            -- onset can be nil here (the entry's button failed to resolve
-            -- this pass, or SetupOverlays pruned it as stale) -- treated as
-            -- fail-safe: no recorded onset means the delay has not started,
-            -- so the glow stays held back rather than lighting immediately.
+            -- onset cannot be nil here (part 1 records it on any pass where
+            -- the buff is active, and shouldGlow implies active). The nil
+            -- check still fails OPEN -- the glow lights -- rather than
+            -- arming a timer against a target that moves every pass.
             -- Three accepted gaps, not fixed here: a buff already up at
             -- login/reload counts from the first pass after load; a refresh
             -- while the buff is still up, or a drop and reapply within one
