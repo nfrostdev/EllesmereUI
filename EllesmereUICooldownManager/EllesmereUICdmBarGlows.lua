@@ -164,6 +164,16 @@ local overlayFrames = {}
 local lastStates = {}     -- [key] = bool (last glow state for change detection)
 local _cachedBG = nil     -- cached barGlows reference (refreshed on SetupOverlays)
 
+-- Glow Delay state (see the section comment above UpdateOverlayVisuals's gate
+-- for the contract). glowDelayOnset is keyed by SPELLID, not overlay key,
+-- because several entries can share one trigger buff and must share one
+-- onset; it survives SetupOverlays on purpose (pruned there, never wiped) so
+-- an options edit mid-buff cannot restart a count. glowDelayPending is keyed
+-- by overlay key and only ever holds a wake's target time while that
+-- overlay's glow is being held back.
+local glowDelayOnset = {}   -- [spellID] = GetTime() of the first pass that saw the buff active
+local glowDelayPending = {} -- [key] = GetTime() target the armed wake timer is aimed at
+
 -------------------------------------------------------------------------------
 --  Stack-threshold gate (secret-safe)
 --  Applications counts read SECRET even in open-world content, so the
@@ -1305,8 +1315,15 @@ local function SetupOverlays()
         end
         ns._barGlowStackSids = nil
         HideCdTeardown()
+        wipe(glowDelayOnset)
+        wipe(glowDelayPending)
         return
     end
+
+    -- spellIDs still named by a delayed ACTIVE entry this pass; anything else
+    -- in glowDelayOnset is pruned below (remove-entry, buff drop + re-add,
+    -- mode/spell change). Built during the assignment walk further down.
+    local delayedSids
 
     -- Whether the buff-tick's aura pool-walk should bother reading applications
     -- at all (EllesmereUICdmHooks.lua): the set of spellIDs stack-gated
@@ -1369,6 +1386,11 @@ local function SetupOverlays()
                         stackSids = stackSids or {}
                         stackSids[sid] = true
                     end
+                    local dSid = (entry.mode ~= "MISSING") and entry.spellID
+                    if dSid and dSid > 0 and (tonumber(entry.glowDelay) or 0) > 0 then
+                        delayedSids = delayedSids or {}
+                        delayedSids[dSid] = true
+                    end
                     if entry.hideOnCooldown then
                         if hostSid == nil then
                             hostSid = HideCdResolveHostSpell(btn, cdID ~= nil) or false
@@ -1407,6 +1429,18 @@ local function SetupOverlays()
         end
     end
     ns._barGlowStackSids = stackSids
+
+    -- Glow Delay onset survives a rebuild on purpose (an options edit mid-buff
+    -- must not restart a count), so it is pruned explicitly rather than
+    -- wiped: a spellID no longer named by any delayed ACTIVE entry (entry
+    -- removed, mode flipped to MISSING, delay cleared, spell changed) is
+    -- stale and would otherwise let a later, unrelated reapply of the same
+    -- spellID inherit a stranger's onset.
+    for sid in pairs(glowDelayOnset) do
+        if not (delayedSids and delayedSids[sid]) then
+            glowDelayOnset[sid] = nil
+        end
+    end
 
     -- Drop overlays watched last pass but not this one (toggle off, assignment
     -- removed, button gone): suppression, pending re-check and wake chain go
@@ -1449,6 +1483,15 @@ local function SetupOverlays()
         end
     end
 
+    -- A wake target for an overlay key that dropped out of the assignment
+    -- set this pass is stale; a still-active overlay's own gate pass owns
+    -- (and replaces) its pending entry, so nothing here touches those.
+    for key in pairs(glowDelayPending) do
+        if not activeKeys[key] then
+            glowDelayPending[key] = nil
+        end
+    end
+
     -- Force re-evaluation on next tick
     wipe(lastStates)
 end
@@ -1474,6 +1517,26 @@ local function UpdateOverlayVisuals()
                 end
             end
 
+            -- GLOW DELAY, part 1: onset tracking. Recorded/cleared here, every
+            -- pass, regardless of Only In Combat below -- the count starts at
+            -- buff onset even on a pass where combat is holding the glow
+            -- back, per the plan's behavior contract. MISSING mode ignores
+            -- glowDelay entirely (contract #6). Entries without a delay never
+            -- touch glowDelayOnset (zero cost when unused). Keyed by spellID,
+            -- not overlay, so entries sharing one trigger buff share one
+            -- onset; the table survives SetupOverlays (pruned there instead
+            -- of wiped) so an options edit mid-buff does not restart it.
+            local glowDelay = mode ~= "MISSING" and tonumber(entry.glowDelay) or nil
+            if glowDelay and glowDelay > 0 and spellID and spellID > 0 then
+                if auraActive then
+                    if not glowDelayOnset[spellID] then
+                        glowDelayOnset[spellID] = GetTime()
+                    end
+                else
+                    glowDelayOnset[spellID] = nil
+                end
+            end
+
             local shouldGlow
             if mode == "MISSING" then
                 shouldGlow = not auraActive
@@ -1483,6 +1546,51 @@ local function UpdateOverlayVisuals()
 
             if shouldGlow and onlyInCombat then
                 shouldGlow = (InCombatLockdown and InCombatLockdown()) or UnitAffectingCombat("player") or false
+            end
+
+            -- GLOW DELAY, part 2: the gate. Can only take a glow away, never
+            -- add one (shouldGlow must already be true to reach here), and
+            -- composes with Only In Combat / At Stacks / Hide On Cooldown in
+            -- any order since it runs before both remaining gates. Placed
+            -- before At Stacks so that gate's machinery (ConfigureStackGate)
+            -- is never configured for a glow the delay is still holding back.
+            -- onset is guaranteed set here: shouldGlow true in ACTIVE mode
+            -- means auraActive was true this same pass, which just
+            -- stamped/kept glowDelayOnset[spellID] above; GetTime() is a
+            -- defensive fallback only, never expected to fire.
+            -- Three accepted gaps (see plan.md), not fixed here: a buff
+            -- already up at login/reload counts from the first pass after
+            -- load; a refresh while the buff is still up does not restart
+            -- the count (invisible without reading the secret expiration
+            -- time); raising the delay mid-count applies the new value to
+            -- the running onset.
+            if shouldGlow and glowDelay and glowDelay > 0 and spellID and spellID > 0 then
+                local onset = glowDelayOnset[spellID] or GetTime()
+                if GetTime() - onset < glowDelay then
+                    shouldGlow = false
+                    local target = onset + glowDelay
+                    if glowDelayPending[key] ~= target then
+                        glowDelayPending[key] = target
+                        if C_Timer and C_Timer.After then
+                            local wait = target - GetTime()
+                            if wait < 0 then wait = 0 end
+                            C_Timer.After(wait, function()
+                                -- Only the wake carrying ITS OWN target may
+                                -- clear the pending entry: a stale timer
+                                -- (superseded by a re-aim, or landed after a
+                                -- newer one already fired) costs one harmless
+                                -- repaint and nothing else. C_Timer.After
+                                -- timers cannot be cancelled, so this is the
+                                -- retirement mechanism, same pattern as Hide
+                                -- On Cooldown's wake chain.
+                                if glowDelayPending[key] == target then
+                                    glowDelayPending[key] = nil
+                                end
+                                HideCdRepaint()
+                            end)
+                        end
+                    end
+                end
             end
 
             -- At Stacks (ACTIVE mode only): fed to the gate(s) every tick
