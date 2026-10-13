@@ -1642,7 +1642,7 @@ local function BindOverlays(bg)
                             stackSids = stackSids or {}
                             stackSids[sid] = true
                         end
-                        local dSid = (entry.mode ~= "MISSING") and entry.spellID
+                        local dSid = (entry.mode ~= "MISSING" and entry.mode ~= "USABLE") and entry.spellID
                         if dSid and dSid > 0 and (tonumber(entry.glowDelay) or 0) > 0 then
                             delayedSids = delayedSids or {}
                             delayedSids[dSid] = true
@@ -1861,9 +1861,11 @@ UpdateOverlayVisuals = function()
             -- buff onset even on a pass where combat is holding the glow
             -- back, by design. MISSING mode ignores glowDelay entirely: that
             -- mode glows on the buff's absence, which a delay has nothing to
-            -- measure from. Entries without a delay never touch
+            -- measure from. USABLE mode ignores it too: it never reads the
+            -- buff, so no onset is ever recorded and a delay would hold the
+            -- glow off for good. Entries without a delay never touch
             -- glowDelayOnset (zero cost when unused).
-            local glowDelay = mode ~= "MISSING" and tonumber(entry.glowDelay) or nil
+            local glowDelay = mode ~= "MISSING" and mode ~= "USABLE" and tonumber(entry.glowDelay) or nil
             if glowDelay and glowDelay > 0 and spellID and spellID > 0 then
                 if auraActive then
                     if not glowDelayOnset[spellID] then
